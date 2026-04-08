@@ -105,15 +105,23 @@ ezschem.draw(parts, nets, hints={}, output="circuit.png")
 - **Power labels** (Vcc): use Schemdraw's native `loc='right'` which gives natural padding
 
 ### 5. Layout Hints (Optional Overrides)
-- Allow AI to override auto-placement when needed
-- Syntax TBD but something like:
+- Allow AI to proactively guide placement for circuits the auto-layout struggles with
+- **Not a fallback for visual debugging** — the AI applies hints based on recognizing topology patterns (e.g., "this is a cross-coupled symmetric circuit") before ever rendering
+- The SKILL file will teach the AI which patterns need hints and what hints to apply
+- Syntax (planned):
   ```python
   hints = {
-      "Q1": {"pos": (0, 2), "orient": "up"},
-      "R3": {"orient": "horizontal"},
+      "Q1": {"col": 0},
+      "Q2": {"col": 2},
+      "C1": {"row": 2, "orient": "right"},
   }
   ```
-- Hints are optional — everything should work without them
+- Supported hint keys (planned): `row`, `col`, `orient`, `align_with`
+- Hints are optional — auto-layout handles ~80% of common circuits without them
+- **Known cases that need hints:**
+  - Cross-coupled / symmetric circuits (astable multivibrator)
+  - H-bridges
+  - Circuits with feedback paths that create graph cycles
 
 ### 6. Component Value Display
 - Values from `parts` dict (e.g., `"470"`, `"10uF"`) rendered as part of the component label
@@ -179,10 +187,14 @@ The skill file teaches Claude how to use EZSchem. Contents:
 6. **`__init__.py`** — public `draw()` API
 
 ### Remaining
-7. **Layout hints** — optional override system (API exists, implementation stubbed)
-8. **Skill file (`SKILL.md`)** — teach Claude how to use EZSchem
-9. **More complex circuit testing** — astable multivibrator, op-amp circuits, H-bridge
+7. **Layout hints implementation** — parse hint dict and apply row/col/orient overrides in placer
+8. **Skill file (`SKILL.md`)** — teach Claude how to use EZSchem, including when to apply hints
+9. **Placer improvements for complex topologies:**
+   - Symmetry detection for cross-coupled circuits (astable multivibrator)
+   - Horizontal layout mode for circuits that read better left-to-right
+   - Better handling of graph cycles (cross-coupling breaks topological sort)
 10. **Wire routing improvements** — wires still route through component bodies in some cases; occupancy grid needs tuning
+11. **Transistor alignment** — renderer has a post-pass to shift components connected to collector/emitter by 0.75 units; this works but is fragile if Schemdraw changes BJT geometry
 
 ## Dependencies
 
@@ -234,11 +246,14 @@ The skill file teaches Claude how to use EZSchem. Contents:
 
 ## Tested Circuits
 
-These circuits produce clean output with the current implementation:
+### Works well (auto-layout)
 - **LED + resistor** — `Vcc -> R1 -> LED1 -> GND` (simple vertical chain)
 - **RC low-pass filter** — `Vin -> R1 -> C1 -> GND` (vertical chain with net label)
 - **Voltage divider** — `Vcc -> R1 -> R2 -> GND`
 - **Common-emitter amplifier** — multi-branch circuit with BJT, base bias, collector load, emitter resistor
+
+### Needs layout hints (auto-layout produces messy output)
+- **Astable multivibrator** — cross-coupled symmetric topology breaks topological sort; base bias resistors placed in wrong columns; cross-coupling capacitors should be horizontal but render vertical. Will need hints to place Q1/Q2 in mirrored columns.
 
 ## Notes
 
