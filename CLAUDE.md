@@ -193,7 +193,8 @@ The skill file teaches Claude how to use EZSchem. Contents:
    - Symmetry detection for cross-coupled circuits (astable multivibrator)
    - Horizontal layout mode for circuits that read better left-to-right
    - Better handling of graph cycles (cross-coupling breaks topological sort)
-10. **Wire routing improvements** — wires still route through component bodies in some cases; occupancy grid needs tuning
+   - **Base-connected components should be placed on the base side of transistors** (left, where the pin faces), not in distant columns that force wires through other components. In the astable, R3/R4 are placed to the right of Q1/Q2 but Q1/Q2's base pins face left — wires from R3/R4 must cross through Q2/Q1 bodies to reach the base. This is a placer problem, not a router problem.
+10. **Wire routing improvements** — router now has segment-level collision detection and accurate occupancy grid with transistor alignment. Remaining issue: router cannot fix wires that *must* cross components due to bad placement (see item 9).
 11. **Transistor alignment** — renderer has a post-pass to shift components connected to collector/emitter by 0.75 units; this works but is fragile if Schemdraw changes BJT geometry
 
 ## Dependencies
