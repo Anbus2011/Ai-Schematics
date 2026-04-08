@@ -147,46 +147,68 @@ def render(graph: CircuitGraph, placements: dict[str, Placement],
 
 
 def _compute_alignment(graph, placements):
-    """Compute X adjustments so components connected to transistor collector/emitter
-    align vertically with those anchors instead of the base position.
+    """Compute X adjustments so components in the same column as a transistor's
+    collector/emitter align vertically with those anchors.
 
     BJTs drawn with .right() have collector/emitter offset ~0.75 units to the right
-    of the base (.at() position). Components in the same column that connect to
-    collector or emitter need to shift right by that offset.
+    of the base (.at() position). All components in the same vertical chain above
+    the collector or below the emitter need to shift right by that offset.
     """
-    # BJT/FET anchor offsets when drawn with .right()
-    # Collector/emitter are at x + 0.75 relative to base
     TRANSISTOR_CE_OFFSET = 0.75
 
     adjustments = {}
     transistor_types = {"npn", "pnp", "nmos", "pmos"}
     vertical_pins = {"collector", "emitter", "drain", "source"}
 
-    # Find all transistors and their vertically-connected components
+    # Build vertical adjacency: component pairs connected by non-horizontal pins
+    # in the same column
+    vert_neighbors = {}  # comp -> set of comps in same column, vertically connected
     for conn in graph.connections:
         src = conn.source
         tgt = conn.target
+        if src.component not in graph.components or tgt.component not in graph.components:
+            continue
+        src_p = placements.get(src.component)
+        tgt_p = placements.get(tgt.component)
+        if not src_p or not tgt_p:
+            continue
+        # Same column check (within tolerance)
+        if abs(src_p.x - tgt_p.x) < 1.0:
+            vert_neighbors.setdefault(src.component, set()).add(tgt.component)
+            vert_neighbors.setdefault(tgt.component, set()).add(src.component)
 
-        # Check: component pin connects to transistor vertical pin
-        if src.component in graph.components and tgt.component in graph.components:
-            src_type = graph.components[src.component].comp_type
-            tgt_type = graph.components[tgt.component].comp_type
+    # Step 1: Find components directly connected to transistor collector/emitter
+    seeds = set()
+    for conn in graph.connections:
+        src = conn.source
+        tgt = conn.target
+        if src.component not in graph.components or tgt.component not in graph.components:
+            continue
+        src_type = graph.components[src.component].comp_type
+        tgt_type = graph.components[tgt.component].comp_type
 
-            # Source is a transistor's vertical pin → target needs alignment
-            if src_type in transistor_types and src.pin in vertical_pins:
-                if tgt.component not in graph.components or tgt_type not in transistor_types:
-                    src_p = placements.get(src.component)
-                    tgt_p = placements.get(tgt.component)
-                    if src_p and tgt_p and abs(src_p.x - tgt_p.x) < 0.5:
-                        adjustments[tgt.component] = TRANSISTOR_CE_OFFSET
+        if src_type in transistor_types and src.pin in vertical_pins:
+            if tgt_type not in transistor_types:
+                seeds.add(tgt.component)
+        if tgt_type in transistor_types and tgt.pin in vertical_pins:
+            if src_type not in transistor_types:
+                seeds.add(src.component)
 
-            # Target is a transistor's vertical pin → source needs alignment
-            if tgt_type in transistor_types and tgt.pin in vertical_pins:
-                if src.component not in graph.components or src_type not in transistor_types:
-                    src_p = placements.get(src.component)
-                    tgt_p = placements.get(tgt.component)
-                    if src_p and tgt_p and abs(src_p.x - tgt_p.x) < 0.5:
-                        adjustments[src.component] = TRANSISTOR_CE_OFFSET
+    # Step 2: Propagate — any component in the same column connected to a
+    # shifted component also gets shifted
+    shifted = set(seeds)
+    queue = list(seeds)
+    while queue:
+        current = queue.pop(0)
+        for neighbor in vert_neighbors.get(current, []):
+            if neighbor not in shifted:
+                comp_type = graph.components[neighbor].comp_type
+                if comp_type not in transistor_types:
+                    shifted.add(neighbor)
+                    queue.append(neighbor)
+
+    for comp in shifted:
+        adjustments[comp] = TRANSISTOR_CE_OFFSET
 
     return adjustments
 
