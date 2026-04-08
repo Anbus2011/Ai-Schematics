@@ -256,6 +256,38 @@ The skill file teaches Claude how to use EZSchem. Contents:
 ### Needs layout hints (auto-layout produces messy output)
 - **Astable multivibrator** — cross-coupled symmetric topology breaks topological sort; base bias resistors placed in wrong columns; cross-coupling capacitors should be horizontal but render vertical. Will need hints to place Q1/Q2 in mirrored columns.
 
+## Development Strategy
+
+### Iterative engine + recipe cycle:
+1. **Fix placer/router** until a target circuit renders correctly — proves the engine *can* produce the layout
+2. **Build a recipe** that encodes the correct `parts`/`nets`/`hints` for that circuit
+3. **Pick next circuit that breaks** → fix the engine → add the recipe → repeat
+
+Each cycle improves both the engine (general layout) and the recipe library (known hard cases).
+
+### Circuit Recipe Library (planned for SKILL.md)
+Recipes are pre-built templates for common circuits. The AI pattern-matches from the user's
+description — no image recognition, just language understanding.
+
+Each recipe contains:
+- **Common names and trigger phrases** — e.g., "blinker", "flasher", "alternating LEDs" → astable multivibrator
+- **`parts` dict** — component types and values (user can customize values)
+- **`nets` list** — connection topology
+- **`hints` dict** — layout overrides for circuits that need them
+
+The AI's job: match user description → look up recipe → adapt values → call `ezschem.draw()`.
+For circuits that don't match any recipe, fall back to auto-layout with no hints.
+
+### Planned recipes (from common circuit list):
+- Voltage divider
+- LED + resistor
+- Common-emitter amplifier
+- Astable multivibrator (needs hints)
+- H-bridge (needs hints)
+- Op-amp inverting/non-inverting
+- Voltage regulator (LDO)
+- RC/LC filter
+
 ## Notes
 
 - This project was planned in Claude.ai conversation and is being built in Claude Code
