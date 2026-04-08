@@ -37,7 +37,12 @@ def render(graph: CircuitGraph, placements: dict[str, Placement],
     # Track drawn elements by component name for anchor access
     drawn_elements = {}
 
-    # 1. Draw all components at their placed positions
+    # 1a. Compute alignment adjustments: components connected to transistor
+    #     collector/emitter need their X shifted to match the actual anchor position.
+    #     BJTs have collector/emitter offset from the base (the .at() position).
+    x_adjustments = _compute_alignment(graph, placements)
+
+    # 1b. Draw all components at their placed positions (with adjustments)
     for name, info in graph.components.items():
         placement = placements.get(name)
         if placement is None:
@@ -56,7 +61,8 @@ def render(graph: CircuitGraph, placements: dict[str, Placement],
         elif placement.orientation == "up":
             elem = elem.up()
 
-        elem = elem.at((placement.x, placement.y))
+        x = placement.x + x_adjustments.get(name, 0)
+        elem = elem.at((x, placement.y))
 
         # Label: ref designator + value, positioned next to the component body
         if info.value:
@@ -138,6 +144,51 @@ def render(graph: CircuitGraph, placements: dict[str, Placement],
         d.save(output, dpi=dpi)
 
     return d
+
+
+def _compute_alignment(graph, placements):
+    """Compute X adjustments so components connected to transistor collector/emitter
+    align vertically with those anchors instead of the base position.
+
+    BJTs drawn with .right() have collector/emitter offset ~0.75 units to the right
+    of the base (.at() position). Components in the same column that connect to
+    collector or emitter need to shift right by that offset.
+    """
+    # BJT/FET anchor offsets when drawn with .right()
+    # Collector/emitter are at x + 0.75 relative to base
+    TRANSISTOR_CE_OFFSET = 0.75
+
+    adjustments = {}
+    transistor_types = {"npn", "pnp", "nmos", "pmos"}
+    vertical_pins = {"collector", "emitter", "drain", "source"}
+
+    # Find all transistors and their vertically-connected components
+    for conn in graph.connections:
+        src = conn.source
+        tgt = conn.target
+
+        # Check: component pin connects to transistor vertical pin
+        if src.component in graph.components and tgt.component in graph.components:
+            src_type = graph.components[src.component].comp_type
+            tgt_type = graph.components[tgt.component].comp_type
+
+            # Source is a transistor's vertical pin → target needs alignment
+            if src_type in transistor_types and src.pin in vertical_pins:
+                if tgt.component not in graph.components or tgt_type not in transistor_types:
+                    src_p = placements.get(src.component)
+                    tgt_p = placements.get(tgt.component)
+                    if src_p and tgt_p and abs(src_p.x - tgt_p.x) < 0.5:
+                        adjustments[tgt.component] = TRANSISTOR_CE_OFFSET
+
+            # Target is a transistor's vertical pin → source needs alignment
+            if tgt_type in transistor_types and tgt.pin in vertical_pins:
+                if src.component not in graph.components or src_type not in transistor_types:
+                    src_p = placements.get(src.component)
+                    tgt_p = placements.get(tgt.component)
+                    if src_p and tgt_p and abs(src_p.x - tgt_p.x) < 0.5:
+                        adjustments[src.component] = TRANSISTOR_CE_OFFSET
+
+    return adjustments
 
 
 def _get_anchor_pos(comp_name, pin_name, drawn_elements, placements):
