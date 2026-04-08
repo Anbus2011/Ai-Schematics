@@ -29,20 +29,22 @@ class WireRoute:
     segments: list[WireSegment]
 
 
-def route_wires(connections, drawn_elements, placements, graph):
+def route_wires(connections, drawn_elements, placements, graph,
+                x_adjustments=None):
     """Compute wire routes for all connections.
 
     Args:
-        connections: List of Connection objects (non-supply only)
+        connections: List of (src_pos, tgt_pos) tuples
         drawn_elements: Dict of component name -> drawn Schemdraw element
         placements: Dict of component name -> Placement
         graph: The CircuitGraph
+        x_adjustments: Dict of component name -> X offset (e.g., transistor alignment)
 
     Returns:
         Tuple of (routes: list[WireRoute], junctions: set of (x,y) points)
     """
     # Build occupancy set: bounding boxes of all placed components
-    occupied = _build_occupancy(placements, graph)
+    occupied = _build_occupancy(placements, graph, x_adjustments or {})
 
     routes = []
     # Track all wire endpoints for junction detection
@@ -55,13 +57,14 @@ def route_wires(connections, drawn_elements, placements, graph):
         route = _route_single(src_pos, tgt_pos, occupied)
         routes.append(route)
 
-        # Track endpoints for junction detection
-        for seg in route.segments:
-            for pt in [seg.start, seg.end]:
-                key = _round_pt(pt)
-                wire_endpoints[key] = wire_endpoints.get(key, 0) + 1
+        # Track wire start/end points (not internal bends) for junction detection.
+        # Each wire contributes its two endpoints (src_pos, tgt_pos) — not
+        # intermediate bend points, which are routing artifacts.
+        for pt in [src_pos, tgt_pos]:
+            key = _round_pt(pt)
+            wire_endpoints[key] = wire_endpoints.get(key, 0) + 1
 
-    # Junctions: points where 3+ wire segment endpoints meet
+    # Junctions: points where 3+ distinct wires meet (true T-junctions)
     junctions = {pt for pt, count in wire_endpoints.items() if count >= 3}
 
     return routes, junctions
@@ -82,13 +85,16 @@ def _route_single(src, tgt, occupied):
     if abs(sx - tx) < 0.01 and abs(sy - ty) < 0.01:
         return WireRoute(segments=[])
 
-    # Straight line (aligned)
+    # Straight line (aligned) — check if it passes through a component
     if abs(sy - ty) < 0.01 or abs(sx - tx) < 0.01:
-        return WireRoute(segments=[WireSegment(src, tgt)])
+        if not _segment_hits_box(src, tgt, occupied):
+            return WireRoute(segments=[WireSegment(src, tgt)])
 
     # Try L-route: horizontal first, then vertical
     corner_hv = (tx, sy)
-    if not _is_occupied(corner_hv, occupied):
+    if (not _is_occupied(corner_hv, occupied)
+            and not _segment_hits_box(src, corner_hv, occupied)
+            and not _segment_hits_box(corner_hv, tgt, occupied)):
         return WireRoute(segments=[
             WireSegment(src, corner_hv),
             WireSegment(corner_hv, tgt),
@@ -96,13 +102,29 @@ def _route_single(src, tgt, occupied):
 
     # Try L-route: vertical first, then horizontal
     corner_vh = (sx, ty)
-    if not _is_occupied(corner_vh, occupied):
+    if (not _is_occupied(corner_vh, occupied)
+            and not _segment_hits_box(src, corner_vh, occupied)
+            and not _segment_hits_box(corner_vh, tgt, occupied)):
         return WireRoute(segments=[
             WireSegment(src, corner_vh),
             WireSegment(corner_vh, tgt),
         ])
 
-    # Z-route: go halfway horizontally, then vertical, then rest of horizontal
+    # Z-route: try several horizontal offsets to find a clear channel
+    for offset_frac in [0.5, 0.3, 0.7, 0.2, 0.8]:
+        mid_x = sx + offset_frac * (tx - sx)
+        mid1 = (mid_x, sy)
+        mid2 = (mid_x, ty)
+        if (not _segment_hits_box(src, mid1, occupied)
+                and not _segment_hits_box(mid1, mid2, occupied)
+                and not _segment_hits_box(mid2, tgt, occupied)):
+            return WireRoute(segments=[
+                WireSegment(src, mid1),
+                WireSegment(mid1, mid2),
+                WireSegment(mid2, tgt),
+            ])
+
+    # Fallback: Z-route at midpoint even if it clips (better than nothing)
     mid_x = (sx + tx) / 2
     mid1 = (mid_x, sy)
     mid2 = (mid_x, ty)
@@ -113,8 +135,10 @@ def _route_single(src, tgt, occupied):
     ])
 
 
-def _build_occupancy(placements, graph):
+def _build_occupancy(placements, graph, x_adjustments=None):
     """Build a list of bounding boxes for all placed components."""
+    if x_adjustments is None:
+        x_adjustments = {}
     boxes = []
     for name, placement in placements.items():
         comp_info = graph.components.get(name)
@@ -124,9 +148,9 @@ def _build_occupancy(placements, graph):
         comp_type = comp_info.comp_type
         size = COMPONENT_SIZES.get(comp_type, (3.0, 1.0))
 
-        # Component is drawn from placement position in its orientation direction.
-        # For "down": starts at (x, y), extends down by size[0] (length)
-        x, y = placement.x, placement.y
+        # Apply the same X adjustments the renderer uses (e.g., transistor alignment)
+        x = placement.x + x_adjustments.get(name, 0)
+        y = placement.y
         if placement.orientation == "down":
             # Component extends downward from (x, y)
             w = size[1] / 2 + CLEARANCE
@@ -153,6 +177,23 @@ def _is_occupied(point, boxes):
     px, py = point
     for x1, y1, x2, y2 in boxes:
         if x1 < px < x2 and y1 < py < y2:
+            return True
+    return False
+
+
+def _segment_hits_box(p1, p2, boxes):
+    """Check if a straight wire segment from p1 to p2 passes through any box.
+
+    Samples points along the segment and checks occupancy.
+    """
+    x1, y1 = p1
+    x2, y2 = p2
+    steps = max(int(max(abs(x2 - x1), abs(y2 - y1)) / 0.5), 2)
+    for i in range(1, steps):
+        t = i / steps
+        px = x1 + t * (x2 - x1)
+        py = y1 + t * (y2 - y1)
+        if _is_occupied((px, py), boxes):
             return True
     return False
 

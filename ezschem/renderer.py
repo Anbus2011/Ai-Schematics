@@ -131,7 +131,8 @@ def render(graph: CircuitGraph, placements: dict[str, Placement],
             wire_pairs.append((src_pos, tgt_pos))
 
     # 2b. Route all wires with obstacle avoidance and junction detection
-    routes, junctions = route_wires(wire_pairs, drawn_elements, placements, graph)
+    routes, junctions = route_wires(wire_pairs, drawn_elements, placements, graph,
+                                    x_adjustments=x_adjustments)
     draw_routes(d, routes, junctions)
 
     # 3. Draw labels for named net nodes (non-supply)
