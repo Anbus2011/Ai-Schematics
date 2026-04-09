@@ -1,6 +1,19 @@
 # Test output
 output/
 
+# netlistsvg PoC artifacts
+test_sto.json
+test_sto.svg
+test_sto_npn.json
+test_sto_npn.svg
+test_astable.json
+test_astable.svg
+test_astable.py
+custom_analog.svg
+
+# Downloaded skin (auto-fetched on first run)
+ezschem/analog_skin.svg
+
 # Python
 __pycache__/
 *.pyc
