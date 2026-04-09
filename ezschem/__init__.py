@@ -30,5 +30,5 @@ def draw(parts: dict, nets: list[str], hints: dict | None = None,
         RuntimeError: If netlistsvg or Node.js is not available.
     """
     skin = ensure_skin()
-    yosys = to_yosys_json(parts, nets)
+    yosys = to_yosys_json(parts, nets, hints=hints)
     return render_svg(yosys, output, skin)

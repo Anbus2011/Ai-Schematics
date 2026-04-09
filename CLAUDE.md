@@ -96,9 +96,10 @@ netlistsvg uses the Eclipse Layout Kernel (elkjs) which handles all of these nat
 - **Explicit pins:** `"Q1.D"` connects only the drain pin (no pass-through)
 - **Supply nets are local:** Each `Vcc`/`GND` occurrence spawns a separate cell attached to the adjacent component's net — prevents global short-circuit
 
-### ELK direction hints
-- `"elk.direction": "DOWN"` injected into `attributes` for vertical components (`r_v`, `c_v`, `l_v`, `diode_v`, `vcc`, `gnd`)
-- The skin file also sets global `org.eclipse.elk.direction="DOWN"`
+### ELK layout behavior
+- The skin file sets global `org.eclipse.elk.direction="DOWN"` — this drives the vertical power→ground flow
+- **Per-cell ELK attributes** (prefix `org.eclipse.elk.*`) in the JSON `attributes` dict are forwarded to ELK by netlistsvg's `Cell.buildElkChild()` — but ELK partitioning (`org.eclipse.elk.partitioning`) crashes netlistsvg's renderer, so symmetric layout must be achieved via net ordering in recipes instead
+- **Net ordering is the primary layout influence** — ELK's layered algorithm is deterministic based on input order; listing symmetric halves in parallel (R1/Q1 then R2/Q2) produces better layouts
 
 ### Module ports
 - Non-supply named nets (Vin, Vout, STO_A, MOTOR_OUT) become module-level ports
@@ -139,22 +140,16 @@ COMPONENT_TYPES = {
 5. **Custom skin** — NMOS/PMOS aliases on NPN/PNP blocks (working), standalone NMOS/PMOS SVG blocks (not yet matched by netlistsvg)
 
 ### Remaining
-6. **MCP server** — thin wrapper exposing `draw_schematic(parts, nets)` tool for Claude Desktop
-7. **Skill file (`SKILL.md`)** — teaches Claude the parts/nets syntax, component types, pin aliases, and circuit topology recipes
-8. **Circuit recipes** — topology templates for common circuits (voltage divider, LED+resistor, common-emitter, astable multivibrator, H-bridge, op-amp configs, filters)
-9. **NMOS/PMOS distinct symbols** — standalone skin blocks exist but netlistsvg doesn't match them; currently renders as NPN/PNP via alias. Need to investigate netlistsvg's skin parser to get `s:type` matching working, or post-process the SVG.
-10. **Cleanup legacy modules** — `placer.py`, `router.py`, `renderer.py` are no longer imported; can be removed once we're confident in the new pipeline
-11. **PNG output** — netlistsvg only outputs SVG. If PNG is needed, add a post-conversion step (e.g., cairosvg or Inkscape CLI).
+6. **NMOS/PMOS distinct symbols** — standalone skin blocks exist but netlistsvg doesn't match them; currently renders as NPN/PNP via alias. Need to investigate netlistsvg's skin parser to get `s:type` matching working, or post-process the SVG.
+7. **PNG output** — netlistsvg only outputs SVG. If PNG is needed, add a post-conversion step (e.g., cairosvg or Inkscape CLI).
+8. **Symmetric layout** — ELK partitioning crashes netlistsvg's renderer. Current workaround: net ordering in SKILL.md recipes. Alternatives evaluated: Circuitikz/Lcapy (needs TeX), KiCad CLI (needs KiCad install, but output is editable .kicad_sch).
 
 ## Dependencies
 
 - Python 3.10+
 - Node.js (LTS) — for `npx netlistsvg`
 - `netlistsvg` npm package (auto-downloaded by npx on first run)
-
-### Python packages (for legacy pipeline, may be removable)
-- `schemdraw` — only used by legacy placer/router/renderer
-- `matplotlib` — schemdraw dependency
+- `mcp` Python package — for the MCP server
 
 ## Tested Circuits
 

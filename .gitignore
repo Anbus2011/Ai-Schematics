@@ -4,6 +4,11 @@ output/
 # Downloaded skin (auto-fetched on first run)
 ezschem/analog_skin.svg
 
+# Node.js (netlistsvg local install)
+node_modules/
+package.json
+package-lock.json
+
 # Python
 __pycache__/
 *.pyc

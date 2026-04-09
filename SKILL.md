@@ -161,9 +161,14 @@ nets = [
 ]
 ```
 
-## Tips
+## Layout Tips
 
-- Keep schematics under ~30 components for clean layout
-- Power flows top-to-bottom (Vcc at top, GND at bottom)
-- Use descriptive ref designators: `Rc` for collector resistor, `Rb1`/`Rb2` for bias network
-- For circuits not matching a recipe, build parts/nets from first principles — ELK handles complex topologies including cycles
+The ELK layout engine is automatic but its output is influenced by **net ordering**. Follow these rules for cleaner schematics:
+
+- **List symmetric halves in parallel order.** For an astable multivibrator, list the Q1 branch nets first, then Q2 branch nets — don't interleave them. This helps ELK place them in adjacent columns.
+- **Put the main signal path first.** The primary power→load→ground chain should be the first nets listed. Bias networks, feedback paths, and support connections come after.
+- **Group related nets together.** All connections to Q1 should be adjacent in the `nets` list, then all connections to Q2.
+- **Keep schematics under ~30 components** for clean layout.
+- **Power flows top-to-bottom** (Vcc at top, GND at bottom) — this is set by the skin file's global ELK direction.
+- Use descriptive ref designators: `Rc` for collector resistor, `Rb1`/`Rb2` for bias network.
+- For circuits not matching a recipe, build parts/nets from first principles — ELK handles complex topologies including cycles.

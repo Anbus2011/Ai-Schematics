@@ -213,17 +213,20 @@ def _pin_key(name: str, pin: str | None) -> str:
 
 
 def to_yosys_json(parts: dict, nets: list[str],
+                   hints: dict | None = None,
                    module_name: str = "circuit") -> dict:
     """Translate ezschem parts/nets into a Yosys-format JSON netlist.
 
     Args:
         parts: {"R1": ("res", "10k"), "Q1": ("nmos",), ...}
         nets: ["Vcc -> R1 -> Q1.D", "Q1.S -> GND", ...]
+        hints: Reserved for future use (layout hints).
         module_name: Top-level module name.
 
     Returns:
         dict suitable for json.dumps() → netlistsvg input.
     """
+    hints = hints or {}
     alloc = _NetIdAllocator()
     use_counts: dict[str, int] = {}
     supply_instances: list[tuple[str, int]] = []
@@ -314,7 +317,7 @@ def to_yosys_json(parts: dict, nets: list[str],
         if value:
             attrs["value"] = value
         if skin_type in VERTICAL_TYPES:
-            attrs["elk.direction"] = "DOWN"
+            attrs["org.eclipse.elk.direction"] = "DOWN"
 
         cells[comp_name] = {
             "type": skin_type,
@@ -339,7 +342,7 @@ def to_yosys_json(parts: dict, nets: list[str],
             "type": "vcc" if is_power else "gnd",
             "port_directions": {"A": "output" if is_power else "input"},
             "connections": {"A": [resolved]},
-            "attributes": {"ref": supply_name, "elk.direction": "DOWN"},
+            "attributes": {"ref": supply_name, "org.eclipse.elk.direction": "DOWN"},
         }
 
     # --- Pass 4: module ports for signal nets ---
