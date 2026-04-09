@@ -1,295 +1,199 @@
-# EZSchem — Schemdraw Wrapper for AI-Generated Schematics
+# EZSchem — AI-Friendly Circuit Schematic Generator
 
 ## Project Overview
 
-EZSchem is a Python wrapper module on top of Schemdraw that enables AI (Claude) to produce clean, human-readable circuit schematics from a simple netlist-style description. The core problem is that Schemdraw requires precise spatial reasoning (coordinates, anchor positions, wire routing, label placement) which LLMs are bad at. EZSchem abstracts that away — AI describes topology, EZSchem handles geometry.
+EZSchem enables AI (Claude) to produce clean, human-readable circuit schematics from a simple netlist-style description. The AI describes topology using `parts`/`nets` dicts, EZSchem translates to Yosys JSON and renders via netlistsvg (Eclipse Layout Kernel) to SVG.
 
 ## Architecture
 
 ```
-AI describes circuit (netlist) → EZSchem wrapper → Schemdraw → PNG + SVG output
+AI describes circuit (parts/nets) → translator.py → Yosys JSON → netlistsvg (ELK) → SVG
 ```
 
 ### Two Deliverables
 
-1. **`ezschem/`** — Python package, installed alongside Schemdraw
-2. **Skill file** (`SKILL.md`) — Teaches Claude how to use EZSchem correctly
+1. **`ezschem/`** — Python package (pip-installable)
+2. **MCP server** (planned) — Exposes `draw_schematic` tool for Claude Desktop
+3. **Skill file** (`SKILL.md`, planned) — Teaches Claude the parts/nets syntax and circuit recipes
 
 ## Design Constraints
 
 - **Single-page schematics only**, up to ~30 components
-- **Simple grid-based layout** — KISS. Power top, ground bottom, signal left-to-right
-- **Wraps Schemdraw's built-in component library** — no custom symbols for now
-- **Optional layout hints** — override auto-placement when needed
-- **Output:** PNG (for AI verification) + SVG (for user, scalable/editable)
+- **Layout is fully automatic** — ELK handles placement, routing, and junction dots
+- **Output:** SVG only (clean, web-ready, scalable)
+- **Dependencies:** Python 3.10+, Node.js (for netlistsvg/ELK)
 
 ## Package Structure
 
 ```
 ezschem/
-    __init__.py        # Public API: draw(parts, nets, hints) → PNG/SVG
-    components.py      # Type mapping + anchor aliases + component sizes
-    parser.py          # Netlist parser + validation + circuit graph builder
-    placer.py          # Grid layout algorithm (layered graph, transistor-aware)
-    router.py          # Wire routing (L/Z-route) + occupancy grid + junction dots
-    renderer.py        # Schemdraw drawing commands + label placement + power/ground symbols
+    __init__.py        # Public API: draw(parts, nets) → SVG path
+    components.py      # Type mapping + anchor aliases + power/ground detection
+    parser.py          # Netlist parser + validation (shared with translator)
+    translator.py      # parts/nets → Yosys JSON + netlistsvg subprocess
+    analog_skin.svg    # Auto-downloaded and patched skin (gitignored)
+    placer.py          # [LEGACY] Custom Sugiyama placer — no longer imported
+    router.py          # [LEGACY] Custom L/Z router — no longer imported
+    renderer.py        # [LEGACY] Schemdraw renderer — no longer imported
 ```
-Note: `orientation.py` and `labels.py` from the original plan were folded into
-`placer.py` and `renderer.py` respectively — they weren't complex enough to justify
-separate files.
 
-Consumer API is simple — the package internals are invisible:
+Consumer API:
 ```python
 import ezschem
-ezschem.draw(parts, nets, hints={}, output="circuit.png")
+ezschem.draw(parts, nets, output="circuit.svg")
 ```
 
-## Module Details
+## Rendering Engine: netlistsvg
 
-### 1. Netlist Parser
-- Accepts component list (name, type, value) and connection strings
-- **Name resolution rule:** Any name in a net string that is a key in `parts` is a component reference. Any name NOT in `parts` is a named net node (e.g., `Vcc`, `GND`, `Vin`, `Vout`). Pin-qualified names like `Q1.C` reference a specific anchor on a component.
-- **Power/ground nodes** (`Vcc`, `GND`, `Vdd`, `Vss`) are special: each occurrence spawns a **local power/ground symbol** at that connection point, rather than wiring everything back to a single shared node. This prevents rat's-nest wiring.
-- Connection format uses chained strings describing signal paths:
-  ```python
-  parts = {
-      "R1": ("res", "470"),
-      "LED1": ("led",),
-      "Q1": ("npn",),
-  }
-  nets = [
-      "Vcc -> R1 -> LED1 -> Q1.C",
-      "Q1.E -> GND",
-      "Q1.B -> R2 -> Vcc",
-  ]
-  ```
-- Parser builds an internal graph of components and connections
-- **Validation:** Parser checks that all component references exist in `parts`, pin names are valid for the component type, and reports clear error messages for invalid netlists (critical for AI self-correction)
+### Why we pivoted (from custom Schemdraw placer)
+The custom `placer.py` used a Sugiyama layered graph algorithm that failed on:
+- **Cyclic topologies** (astable multivibrators — cross-coupling breaks topological sort)
+- **Directional pin alignment** (base-connected components placed on wrong side of transistors)
+- **Wire crossings** through component bodies (router can't fix bad placement)
 
-### 2. Grid Placer (`placer.py`)
-- Assigns each component a (row, col) on a grid
-- **Primary flow is vertical** (power top → ground bottom). Layers = rows, parallel branches = columns.
-- Uses a **layered graph layout** algorithm (simplified Sugiyama):
-  1. Build directed graph from net strings, classifying edges as **vertical** (collector/emitter/start/end) or **horizontal** (base/gate)
-  2. Assign rows via longest-path from power-connected sources
-  3. Components connected only by horizontal edges (e.g., base bias resistors) inherit the row of their horizontal neighbor
-  4. Assign columns within each row using barycenter heuristic (two-pass: top-down then bottom-up for alignment)
-- **Grid spacing:** `GRID_SPACING_X = 6.0`, `GRID_SPACING_Y = 5.0` (Schemdraw units)
-- **Orientation rules (integrated, no separate solver):**
-  - Two-terminal components (res, cap, ind, diode, led, sw): `orientation="down"` (vertical chain)
-  - Transistors (npn, pnp, nmos, pmos): `orientation="right"` — their natural Schemdraw orientation already has collector/drain at top, emitter/source at bottom, base/gate to the left
-- For hard cases, layout hints provide the escape valve
+netlistsvg uses the Eclipse Layout Kernel (elkjs) which handles all of these natively.
 
-### 3. Wire Router (`router.py`)
-- Orthogonal (right-angle) paths only — no diagonal wires ever
-- **L-route first, Z-route fallback:** Try L-shaped (one bend) routing first; if the corner is occupied by a component, use Z-shaped (two bend) routing through a clear channel
-- Uses `elm.Line().at().to()` for wire segments (not `.tox()`/`.toy()` — direct point-to-point is cleaner)
-- Maintains an **occupancy grid** of component bounding boxes to avoid routing through component bodies
-- **Junction dots:** Automatically inserts `elm.Dot()` at T-junctions where 3+ wire segment endpoints meet at the same point
+### How the pipeline works
+1. `to_yosys_json(parts, nets)` — translates parts/nets into Yosys JSON format
+2. JSON written to temp file alongside output
+3. `npx netlistsvg input.json -o output.svg --skin analog_skin.svg` called via subprocess
+4. SVG returned
 
-### 4. Label Placement (integrated into `renderer.py`)
-- Labels are positioned automatically with padding controlled by constants at the top of `renderer.py`:
-  - `LABEL_PAD = 0.225` — gap between component body and ref/value label
-  - `NET_LABEL_PAD = 0.5` — offset for net node labels (Vin, Vout) from connection point
-  - `SUPPLY_LABEL_PAD = 0.3` — offset for power/ground labels (Vcc) from symbol
-- **Schemdraw `loc` mapping for `.down()` elements is rotated:**
-  - `loc='bottom'` = right side in drawing space
-  - `loc='top'` = left side in drawing space
-  - `loc='right'` = top (start) in drawing space
-  - `loc='left'` = bottom (end) in drawing space
-- **Per-component-type rules:**
-  - Vertical two-terminal (res, cap, ind, sw): `loc='bottom'` (right side of body)
-  - LEDs/diodes/zeners: `loc='top'` (left side — opposite from emission arrows)
-  - Transistors (`.right()` orientation): `loc='right'` (right side, clear of collector/emitter wires)
-- **Net node labels** (Vin, Vout): positioned above-left of the open dot connection point
-- **Power labels** (Vcc): use Schemdraw's native `loc='right'` which gives natural padding
+### Skin file (`analog_skin.svg`)
+- Auto-downloaded from netlistsvg GitHub on first run, cached in `ezschem/`
+- Patched to add `nmos`/`pmos` aliases on the NPN/PNP transistor blocks
+- Contains standalone NMOS/PMOS symbol definitions (not yet matched by netlistsvg — alias approach is the working fallback)
+- **Key discovery:** netlistsvg matches cells by `<s:alias>` values, NOT by `s:type` attributes
 
-### 5. Layout Hints (Optional Overrides)
-- Allow AI to proactively guide placement for circuits the auto-layout struggles with
-- **Not a fallback for visual debugging** — the AI applies hints based on recognizing topology patterns (e.g., "this is a cross-coupled symmetric circuit") before ever rendering
-- The SKILL file will teach the AI which patterns need hints and what hints to apply
-- Syntax (planned):
-  ```python
-  hints = {
-      "Q1": {"col": 0},
-      "Q2": {"col": 2},
-      "C1": {"row": 2, "orient": "right"},
-  }
-  ```
-- Supported hint keys (planned): `row`, `col`, `orient`, `align_with`
-- Hints are optional — auto-layout handles ~80% of common circuits without them
-- **Known cases that need hints:**
-  - Cross-coupled / symmetric circuits (astable multivibrator)
-  - H-bridges
-  - Circuits with feedback paths that create graph cycles
+### Skin alias mapping (ezschem type → skin alias)
+| ezschem | skin alias | skin s:type | ports |
+|---------|-----------|-------------|-------|
+| `res` | `r_v` | `resistor_v` | A, B |
+| `cap` | `c_v` | `capacitor_v` | A, B |
+| `ind` | `l_v` | `inductor_v` | A, B |
+| `diode` | `d_v` | `diode_v` | +, - |
+| `led` | `d_led_v` | `diode_led_v` | +, - |
+| `zener` | `d_sk_v` | `diode_schottky_v` | +, - |
+| `npn` | `q_npn` | `transistor_npn` | C, B, E |
+| `pnp` | `q_pnp` | `transistor_pnp` | C, B, E |
+| `nmos` | `nmos` | (alias on `transistor_npn`) | C, B, E |
+| `pmos` | `pmos` | (alias on `transistor_pnp`) | C, B, E |
+| `opamp` | `opamp` | `opamp` | +, -, OUT |
+| `sw` | `r_v` | `resistor_v` | A, B (stand-in) |
 
-### 6. Component Value Display
-- Values from `parts` dict (e.g., `"470"`, `"10uF"`) rendered as part of the component label
-- Format: ref designator on one line, value on next — e.g., `"R1\n470Ω"`
-- Units are passed through as-is (AI provides them in the `parts` value string)
+### Pin mapping (ezschem pin → skin port)
+- Passives: `start` → `A`, `end` → `B`
+- Diodes/LEDs: `start` → `+`, `end` → `-`
+- BJTs: `collector` → `C`, `base` → `B`, `emitter` → `E`
+- FETs: `drain` → `C`, `gate` → `B`, `source` → `E` (reuses BJT port layout)
+- Op-amp: `in1` → `+`, `in2` → `-`, `out` → `OUT`
 
-### 7. Renderer (`renderer.py`)
-- Calls Schemdraw drawing commands with calculated coordinates
-- **Canvas sizing:** Automatically sizes drawing based on grid dimensions (rows × columns × grid spacing)
-- Exports PNG at 150 DPI for verification
-- Exports SVG for user delivery
-- White background, clean line weights
-- Named net nodes (Vin, Vout, etc.) rendered as text labels at their connection points
+## Translator Details (`translator.py`)
 
-## Skill File (`SKILL.md`)
+### Net ID allocation
+- Uses union-find to assign unique integer IDs to connected nets
+- **Chain semantics:** `"A -> R1 -> B"` means A connects to R1.start, R1.end connects to B (two-terminal pass-through)
+- **Explicit pins:** `"Q1.D"` connects only the drain pin (no pass-through)
+- **Supply nets are local:** Each `Vcc`/`GND` occurrence spawns a separate cell attached to the adjacent component's net — prevents global short-circuit
 
-The skill file teaches Claude how to use EZSchem. Contents:
+### ELK direction hints
+- `"elk.direction": "DOWN"` injected into `attributes` for vertical components (`r_v`, `c_v`, `l_v`, `diode_v`, `vcc`, `gnd`)
+- The skin file also sets global `org.eclipse.elk.direction="DOWN"`
 
-1. **When to use** — any request for a circuit schematic/diagram
-2. **Component type names** — mapping of short names to Schemdraw elements:
-   - `res` → Resistor
-   - `cap` → Capacitor
-   - `npn` → BjtNpn
-   - `pnp` → BjtPnp
-   - `nmos` → NFet
-   - `pmos` → PFet
-   - `led` → LED
-   - `diode` → Diode
-   - `zener` → Zener
-   - `ind` → Inductor
-   - `opamp` → Opamp
-   - `sw` → Switch
-   - etc.
-3. **Anchor naming conventions** per component type:
-   - EZSchem uses **short aliases** mapped to Schemdraw's real anchor names
-   - Resistors/caps/inductors: `.p` / `.n` (or `.start` / `.end`) → Schemdraw `.start`, `.end`
-   - BJTs: `.B`, `.C`, `.E` → Schemdraw `.base`, `.collector`, `.emitter`
-   - MOSFETs: `.G`, `.D`, `.S` → Schemdraw `.gate`, `.drain`, `.source`
-   - Op-amps: `.in1`, `.in2`, `.out` → Schemdraw `.in1`, `.in2`, `.out` (same names)
-   - Diodes/LEDs: `.A`, `.K` → Schemdraw `.start`, `.end` (anode=start, cathode=end)
-   - The mapping layer in `ezschem.py` translates short names to real Schemdraw anchors
-4. **Net string syntax** — how to write connection chains
-5. **Layout hint syntax** — how to override placement
-6. **Common circuit examples** — copy-paste templates:
-   - Voltage divider
-   - LED + resistor
-   - Common-emitter amplifier
-   - Astable multivibrator
-   - H-bridge
-   - Op-amp inverting/non-inverting
-   - Voltage regulator (LDO)
-   - RC/LC filter
-7. **Troubleshooting** — common issues and fixes
+### Module ports
+- Non-supply named nets (Vin, Vout, STO_A, MOTOR_OUT) become module-level ports
+- Heuristic: names containing "OUT" get `direction: "output"`, others get `"input"`
+
+## Netlist Parser (`parser.py`)
+
+Shared between the old Schemdraw pipeline and the new netlistsvg pipeline.
+
+- **Name resolution:** Any name in `parts` dict is a component reference. Any name NOT in `parts` is a named net node.
+- **Power/ground nodes** (`Vcc`, `GND`, `Vdd`, `Vss`) spawn local symbols at each occurrence.
+- **Auto-pin assignment:** Two-terminal components referenced without a pin get `start`/`end` assigned in order of use.
+- **Validation:** Clear error messages for unknown types, invalid pins, missing components.
+
+## Component Types (`components.py`)
+
+```python
+COMPONENT_TYPES = {
+    "res", "cap", "ind", "diode", "led", "zener",
+    "npn", "pnp", "nmos", "pmos", "opamp", "sw",
+}
+```
+
+### Anchor aliases per type
+- Two-terminal (res, cap, ind, sw): `.p`/`.n`, `.start`/`.end`
+- Diodes/LEDs: `.A`/`.K` (anode/cathode), plus `.start`/`.end`
+- BJTs: `.B`, `.C`, `.E`
+- MOSFETs: `.G`, `.D`, `.S`
+- Op-amp: `.in1`, `.in2`, `.out`, `.vd`, `.vs`
 
 ## Build Status
 
 ### Completed
-1. **`components.py`** — type mapping, anchor aliases, component sizes, power/ground detection
-2. **`parser.py`** — netlist parser, auto-pin assignment for two-terminal components, pin validation with clear error messages
-3. **`placer.py`** — layered graph layout with vertical/horizontal edge classification, transistor-aware row/column assignment, barycenter heuristic
-4. **`router.py`** — L-route with Z-route fallback, occupancy grid from component bounding boxes, junction dot detection
-5. **`renderer.py`** — Schemdraw rendering, label placement with per-type rules, local power/ground symbols, net node labels, wire drawing
-6. **`__init__.py`** — public `draw()` API
+1. **`components.py`** — type mapping, anchor aliases, power/ground detection
+2. **`parser.py`** — netlist parser, auto-pin assignment, pin validation
+3. **`translator.py`** — Yosys JSON translation, net ID allocation (union-find), per-type pin mapping, local supply symbols, ELK hints, skin management, netlistsvg subprocess
+4. **`__init__.py`** — public `draw()` API using netlistsvg backend
+5. **Custom skin** — NMOS/PMOS aliases on NPN/PNP blocks (working), standalone NMOS/PMOS SVG blocks (not yet matched by netlistsvg)
 
 ### Remaining
-7. **Layout hints implementation** — parse hint dict and apply row/col/orient overrides in placer
-8. **Skill file (`SKILL.md`)** — teach Claude how to use EZSchem, including when to apply hints
-9. **Placer improvements for complex topologies:**
-   - Symmetry detection for cross-coupled circuits (astable multivibrator)
-   - Horizontal layout mode for circuits that read better left-to-right
-   - Better handling of graph cycles (cross-coupling breaks topological sort)
-   - **Base-connected components should be placed on the base side of transistors** (left, where the pin faces), not in distant columns that force wires through other components. In the astable, R3/R4 are placed to the right of Q1/Q2 but Q1/Q2's base pins face left — wires from R3/R4 must cross through Q2/Q1 bodies to reach the base. This is a placer problem, not a router problem.
-10. **Wire routing improvements** — router now has segment-level collision detection and accurate occupancy grid with transistor alignment. Remaining issue: router cannot fix wires that *must* cross components due to bad placement (see item 9).
-11. **Transistor alignment** — renderer has a post-pass to shift components connected to collector/emitter by 0.75 units; this works but is fragile if Schemdraw changes BJT geometry
+6. **MCP server** — thin wrapper exposing `draw_schematic(parts, nets)` tool for Claude Desktop
+7. **Skill file (`SKILL.md`)** — teaches Claude the parts/nets syntax, component types, pin aliases, and circuit topology recipes
+8. **Circuit recipes** — topology templates for common circuits (voltage divider, LED+resistor, common-emitter, astable multivibrator, H-bridge, op-amp configs, filters)
+9. **NMOS/PMOS distinct symbols** — standalone skin blocks exist but netlistsvg doesn't match them; currently renders as NPN/PNP via alias. Need to investigate netlistsvg's skin parser to get `s:type` matching working, or post-process the SVG.
+10. **Cleanup legacy modules** — `placer.py`, `router.py`, `renderer.py` are no longer imported; can be removed once we're confident in the new pipeline
+11. **PNG output** — netlistsvg only outputs SVG. If PNG is needed, add a post-conversion step (e.g., cairosvg or Inkscape CLI).
 
 ## Dependencies
 
 - Python 3.10+
-- `schemdraw` (pip install schemdraw)
-- `matplotlib` (schemdraw dependency, used for PNG rendering)
+- Node.js (LTS) — for `npx netlistsvg`
+- `netlistsvg` npm package (auto-downloaded by npx on first run)
 
-## Schemdraw Key Patterns (Reference for Development)
-
-### What works well:
-- Component symbols are clean and publication-quality
-- Anchor points on components are reliable
-- Sequential drawing along a path is straightforward
-- `.at()` for jumping to specific positions
-- `.label()` for component annotation
-
-### What causes problems (why this wrapper exists):
-- No auto-routing — wires go wherever you tell them, including through components
-- `.to()` draws diagonal lines — must use `.tox()` + `.toy()` for orthogonal routing
-- Label placement is manual — no collision detection
-- No netlist input — everything is positional/sequential
-- Complex cross-coupled circuits require careful drawing order planning
-- Flipped transistors swap collector/emitter anchor positions
-
-### Default component orientations:
-- Resistors, capacitors, inductors draw **horizontally** by default (3 units long)
-- BJTs and MOSFETs draw **vertically** by default when using `.right()`: collector/drain at top (+Y), emitter/source at bottom (-Y), base/gate to the left (at the `.at()` position)
-- Op-amps draw horizontally (inputs left, output right)
-- **For vertical power→ground circuits:** use `.down()` for two-terminal components, `.right()` for transistors (their natural vertical orientation)
-
-### Schemdraw label `loc` behavior (CRITICAL — rotates with element direction):
-- For `.right()` elements: `loc='top'` = above, `'bottom'` = below, `'left'` = start, `'right'` = end
-- **For `.down()` elements, `loc` rotates 90°:**
-  - `loc='bottom'` → **right side** in drawing space (use for labels on vertical components)
-  - `loc='top'` → **left side** in drawing space (use for LEDs/diodes to avoid arrows)
-  - `loc='right'` → **top** (start) in drawing space
-  - `loc='left'` → **bottom** (end) in drawing space
-- The `ofst` parameter adds padding between the component body and the label text
-- `ofst=0.225` provides good clearance without excessive spacing
-
-### Critical Schemdraw gotchas:
-- `elm.BjtNpn().flip()` mirrors the component — collector and emitter anchors swap sides
-- `.right(distance)` DOES accept a distance argument in Schemdraw 0.22 — e.g. `.right(6)` sets element length/direction
-- Labels with `\n` in them create multi-line labels (useful for ref + value)
-- `elm.Dot()` creates a filled junction dot, `elm.Dot(open=True)` creates an open circle (for terminals)
-- `elm.Ground()` always draws downward from its connection point
-- `elm.Vdd()` always draws upward from its connection point — `loc='right'` with `ofst` gives natural label padding
-- LED/Diode elements have emission/direction arrows that extend to one side — place labels on the **opposite** side to avoid overlap
+### Python packages (for legacy pipeline, may be removable)
+- `schemdraw` — only used by legacy placer/router/renderer
+- `matplotlib` — schemdraw dependency
 
 ## Tested Circuits
 
-### Works well (auto-layout)
+### Works well (netlistsvg/ELK)
 - **LED + resistor** — `Vcc -> R1 -> LED1 -> GND` (simple vertical chain)
-- **RC low-pass filter** — `Vin -> R1 -> C1 -> GND` (vertical chain with net label)
-- **Voltage divider** — `Vcc -> R1 -> R2 -> GND`
-- **Common-emitter amplifier** — multi-branch circuit with BJT, base bias, collector load, emitter resistor
+- **STO (Safe Torque Off)** — two NMOS in series with pull-down resistors, separate enable signals
+- **Astable multivibrator** — cross-coupled NPN topology with coupling capacitors (previously broken with custom placer)
 
-### Needs layout hints (auto-layout produces messy output)
-- **Astable multivibrator** — cross-coupled symmetric topology breaks topological sort; base bias resistors placed in wrong columns; cross-coupling capacitors should be horizontal but render vertical. Will need hints to place Q1/Q2 in mirrored columns.
+### Not yet tested
+- Common-emitter amplifier
+- Op-amp inverting/non-inverting
+- H-bridge
+- Voltage regulator
 
 ## Development Strategy
 
-### Iterative engine + recipe cycle:
-1. **Fix placer/router** until a target circuit renders correctly — proves the engine *can* produce the layout
-2. **Build a recipe** that encodes the correct `parts`/`nets`/`hints` for that circuit
-3. **Pick next circuit that breaks** → fix the engine → add the recipe → repeat
-
-Each cycle improves both the engine (general layout) and the recipe library (known hard cases).
+### Layer stack (build bottom-up):
+```
+SKILL.md          ← teaches Claude the parts/nets syntax + recipes
+MCP server        ← thin: receives tool call, calls ezschem.draw(), returns SVG path
+ezschem package   ← translator + netlistsvg subprocess (DONE)
+```
 
 ### Circuit Recipe Library (planned for SKILL.md)
-Recipes are pre-built templates for common circuits. The AI pattern-matches from the user's
-description — no image recognition, just language understanding.
+Recipes are topology templates. The AI pattern-matches from the user's description — no image recognition, just language understanding.
 
 Each recipe contains:
-- **Common names and trigger phrases** — e.g., "blinker", "flasher", "alternating LEDs" → astable multivibrator
-- **`parts` dict** — component types and values (user can customize values)
+- **Common names and trigger phrases** — e.g., "blinker", "flasher" → astable multivibrator
+- **`parts` dict** — component types and values (user customizes values)
 - **`nets` list** — connection topology
-- **`hints` dict** — layout overrides for circuits that need them
 
 The AI's job: match user description → look up recipe → adapt values → call `ezschem.draw()`.
-For circuits that don't match any recipe, fall back to auto-layout with no hints.
+For circuits that don't match any recipe, the AI constructs parts/nets from first principles.
 
-### Planned recipes (from common circuit list):
-- Voltage divider
-- LED + resistor
-- Common-emitter amplifier
-- Astable multivibrator (needs hints)
-- H-bridge (needs hints)
-- Op-amp inverting/non-inverting
-- Voltage regulator (LDO)
-- RC/LC filter
+Note: recipes no longer need `hints` dicts for layout workarounds — ELK handles complex topologies automatically.
 
 ## Notes
 
-- This project was planned in Claude.ai conversation and is being built in Claude Code
-- Circuit-Synth + KiCad MCP was evaluated as an alternative path but deferred — EZSchem is for quick standalone schematic images, not full EDA project generation
-- If EZSchem works well, a follow-up project could bridge it to KiCad export via kicad-sch-api
+- Project was planned in Claude.ai and built in Claude Code
+- Originally used Schemdraw with custom placer/router — pivoted to netlistsvg after placer failed on cyclic topologies
+- Circuit-Synth + KiCad MCP was evaluated as alternative — deferred. EZSchem is for quick standalone schematic images.
+- netlistsvg's skin parser only matches by `<s:alias>` values, not `s:type` — this is why standalone NMOS/PMOS blocks don't render. Workaround: aliases on existing NPN/PNP blocks.
