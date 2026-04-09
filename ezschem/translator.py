@@ -382,19 +382,27 @@ def render_svg(yosys_json: dict, output: str, skin_path: Path) -> str:
             "  macOS:   brew install node"
         )
 
-    # Write JSON next to the output file
-    json_path = Path(output).with_suffix(".json")
-    json_path.write_text(json.dumps(yosys_json, indent=2), encoding="utf-8")
+    import tempfile
 
-    cmd = [npx, "netlistsvg", str(json_path), "-o", output,
-           "--skin", str(skin_path)]
+    # Write JSON to a temp file (cleaned up automatically)
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, encoding="utf-8",
+    ) as tmp:
+        json.dump(yosys_json, tmp, indent=2)
+        json_path = tmp.name
 
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=120,
-        env=dict(os.environ),
-    )
+    try:
+        cmd = [npx, "netlistsvg", json_path, "-o", output,
+               "--skin", str(skin_path)]
 
-    if result.returncode != 0:
-        raise RuntimeError(f"netlistsvg failed: {result.stderr.strip()}")
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=120,
+            env=dict(os.environ),
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(f"netlistsvg failed: {result.stderr.strip()}")
+    finally:
+        Path(json_path).unlink(missing_ok=True)
 
     return output

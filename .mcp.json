@@ -4,7 +4,8 @@
       "command": "python",
       "args": ["d:/app-projects/Ai_Schematics/mcp_server.py"],
       "env": {
-        "PATH": "C:\\Program Files\\nodejs;%PATH%"
+        "PATH": "C:\\Program Files\\nodejs;%PATH%",
+        "EZSCHEM_OUTPUT_DIR": "d:/app-projects/Ai_Schematics/output"
       }
     }
   }

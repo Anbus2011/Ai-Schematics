@@ -1,6 +1,8 @@
 """EZSchem MCP Server — exposes draw_schematic tool for Claude."""
 
+import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # Ensure the ezschem package is importable
@@ -11,8 +13,19 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP("EZSchem")
 
 
+def _output_dir() -> Path:
+    """Resolve the output directory from env or default."""
+    env_dir = os.environ.get("EZSCHEM_OUTPUT_DIR")
+    if env_dir:
+        d = Path(env_dir)
+    else:
+        d = Path.home() / "ezschem_output"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 @mcp.tool()
-def draw_schematic(parts: dict, nets: list[str], output: str = "circuit.svg") -> str:
+def draw_schematic(parts: dict, nets: list[str], name: str = "") -> str:
     """Generate a circuit schematic SVG from a netlist description.
 
     Args:
@@ -21,7 +34,8 @@ def draw_schematic(parts: dict, nets: list[str], output: str = "circuit.svg") ->
                Example: {"R1": ["res", "470"], "Q1": ["npn"], "LED1": ["led"]}
         nets: Connection strings describing signal paths.
               Example: ["Vcc -> R1 -> LED1 -> GND", "Q1.B -> R2 -> Vcc"]
-        output: Output SVG filename (default: circuit.svg).
+        name: Optional circuit name for the output filename.
+              If empty, uses a timestamp.
 
     Component types: res, cap, ind, diode, led, zener, npn, pnp, nmos, pmos, opamp, sw
 
@@ -43,14 +57,19 @@ def draw_schematic(parts: dict, nets: list[str], output: str = "circuit.svg") ->
 
     # MCP/JSON sends lists, but ezschem expects tuples for part specs
     normalized_parts = {}
-    for name, spec in parts.items():
-        if isinstance(spec, list):
-            normalized_parts[name] = tuple(spec)
-        else:
-            normalized_parts[name] = spec
+    for ref, spec in parts.items():
+        normalized_parts[ref] = tuple(spec) if isinstance(spec, list) else spec
 
-    result = ezschem.draw(normalized_parts, nets, output=output)
-    return str(Path(result).resolve())
+    # Build output path
+    if name:
+        filename = name.replace(" ", "_") + ".svg"
+    else:
+        filename = datetime.now().strftime("schematic_%Y%m%d_%H%M%S.svg")
+
+    output_path = _output_dir() / filename
+
+    ezschem.draw(normalized_parts, nets, output=str(output_path))
+    return str(output_path.resolve())
 
 
 if __name__ == "__main__":
