@@ -256,6 +256,14 @@ def to_yosys_json(parts: dict, nets: list[str],
         }
 
     # --- Pass 3: local supply symbols ---
+    # Build a reverse map: net_id → component name (for positioning supplies)
+    _nid_to_comp: dict[int, str] = {}
+    for full_key, nid in net_map.items():
+        if "." in full_key:
+            comp = full_key.split(".", 1)[0]
+            if comp in parts:
+                _nid_to_comp.setdefault(nid, comp)
+
     supply_count: dict[str, int] = defaultdict(int)
     for supply_name, nid in supply_instances:
         resolved = nid
@@ -267,11 +275,27 @@ def to_yosys_json(parts: dict, nets: list[str],
         supply_count[supply_name] += 1
         cell_name = f"{supply_name}_{supply_count[supply_name]}"
         is_power = supply_name in POWER_NETS
+        supply_attrs: dict = {
+            "ref": supply_name,
+            "org.eclipse.elk.direction": "DOWN",
+        }
+
+        # Auto-position supply symbols near the component they connect to
+        neighbor = _nid_to_comp.get(nid)
+        if neighbor and neighbor in hints:
+            nh = hints[neighbor]
+            if "x" in nh:
+                supply_attrs["org.eclipse.elk.x"] = nh["x"]
+            if "y" in nh:
+                # Vcc above (y - 60), GND below (y + 50)
+                offset = -60 if is_power else 50
+                supply_attrs["org.eclipse.elk.y"] = nh["y"] + offset
+
         cells[cell_name] = {
             "type": "vcc" if is_power else "gnd",
             "port_directions": {"A": "output" if is_power else "input"},
             "connections": {"A": [resolved]},
-            "attributes": {"ref": supply_name, "org.eclipse.elk.direction": "DOWN"},
+            "attributes": supply_attrs,
         }
 
     # --- Pass 4: ensure all cells have partition if any do ---
