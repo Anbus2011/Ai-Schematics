@@ -256,13 +256,31 @@ def to_yosys_json(parts: dict, nets: list[str],
         }
 
     # --- Pass 3: local supply symbols ---
-    # Build a reverse map: net_id → component name (for positioning supplies)
-    _nid_to_comp: dict[int, str] = {}
+    # Build a reverse map: net_id → (component name, pin name)
+    _nid_to_comp_pin: dict[int, tuple[str, str]] = {}
     for full_key, nid in net_map.items():
         if "." in full_key:
-            comp = full_key.split(".", 1)[0]
+            comp, pin = full_key.split(".", 1)
             if comp in parts:
-                _nid_to_comp.setdefault(nid, comp)
+                _nid_to_comp_pin.setdefault(nid, (comp, pin))
+
+    # Port X/Y offsets within each skin symbol (from the analog.svg skin)
+    _PORT_XY = {
+        # skin_type: {port_id: (x, y)}
+        "r_v":       {"A": (5, 0),  "B": (5, 50)},
+        "c_v":       {"A": (15, 0), "B": (15, 50)},
+        "l_v":       {"A": (5, 0),  "B": (5, 50)},
+        "d_v":       {"+": (10, 0), "-": (10, 50)},
+        "d_led_v":   {"+": (10, 0), "-": (10, 50)},
+        "d_sk_v":    {"+": (10, 0), "-": (10, 50)},
+        "q_npn":     {"C": (22, 2), "B": (0, 16), "E": (23, 29)},
+        "q_pnp":     {"C": (22, 2), "B": (0, 16), "E": (23, 29)},
+        "nmos":      {"C": (22, 2), "B": (0, 16), "E": (23, 29)},
+        "pmos":      {"C": (22, 2), "B": (0, 16), "E": (23, 29)},
+        "opamp":     {"+": (0, 10), "-": (0, 30), "OUT": (40, 20)},
+        "vcc":       {"A": (10, 30)},
+        "gnd":       {"A": (10, -15)},
+    }
 
     supply_count: dict[str, int] = defaultdict(int)
     for supply_name, nid in supply_instances:
@@ -275,24 +293,48 @@ def to_yosys_json(parts: dict, nets: list[str],
         supply_count[supply_name] += 1
         cell_name = f"{supply_name}_{supply_count[supply_name]}"
         is_power = supply_name in POWER_NETS
+        supply_type = "vcc" if is_power else "gnd"
         supply_attrs: dict = {
             "ref": supply_name,
             "org.eclipse.elk.direction": "DOWN",
         }
 
-        # Auto-position supply symbols near the component they connect to
-        neighbor = _nid_to_comp.get(nid)
-        if neighbor and neighbor in hints:
-            nh = hints[neighbor]
-            if "x" in nh:
-                supply_attrs["org.eclipse.elk.x"] = nh["x"]
-            if "y" in nh:
-                # Vcc above (y - 60), GND below (y + 50)
-                offset = -60 if is_power else 50
-                supply_attrs["org.eclipse.elk.y"] = nh["y"] + offset
+        # Auto-position supply directly above/below connected component port
+        comp_pin = _nid_to_comp_pin.get(nid)
+        if comp_pin:
+            neighbor, pin_name = comp_pin
+            if neighbor in hints and ("x" in hints[neighbor] or "y" in hints[neighbor]):
+                nh = hints[neighbor]
+                comp_type = parts[neighbor][0]
+                skin_type = SKIN_TYPES.get(comp_type, "generic")
+                port_id = _pin_to_port(comp_type, pin_name)
+
+                comp_port = _PORT_XY.get(skin_type, {}).get(port_id, (0, 0))
+                supply_port = _PORT_XY.get(supply_type, {}).get("A", (10, 30))
+
+                if "x" in nh:
+                    # Align supply port X with component port X
+                    supply_attrs["org.eclipse.elk.x"] = (
+                        nh["x"] + comp_port[0] - supply_port[0]
+                    )
+                if "y" in nh:
+                    # Place supply port directly above (Vcc) or below (GND)
+                    gap = 5
+                    if is_power:
+                        # Supply port Y should be just above component port Y
+                        supply_attrs["org.eclipse.elk.y"] = (
+                            nh["y"] + comp_port[1] - supply_port[1] - gap
+                        )
+                    else:
+                        # Supply port Y should be just below component port Y
+                        comp_height = {"q_npn": 32, "q_pnp": 32, "nmos": 32,
+                                       "pmos": 32}.get(skin_type, 50)
+                        supply_attrs["org.eclipse.elk.y"] = (
+                            nh["y"] + comp_port[1] - supply_port[1] + gap
+                        )
 
         cells[cell_name] = {
-            "type": "vcc" if is_power else "gnd",
+            "type": supply_type,
             "port_directions": {"A": "output" if is_power else "input"},
             "connections": {"A": [resolved]},
             "attributes": supply_attrs,
