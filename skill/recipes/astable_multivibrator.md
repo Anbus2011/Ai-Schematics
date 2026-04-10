@@ -31,27 +31,26 @@ nets = [
 
 ## Symmetric (with position hints)
 
-For a traditional symmetric layout, use `x`/`y` hints to fix component positions. ELK routes the wires automatically.
+For a traditional symmetric layout, use `x`/`y` hints to fix component positions. ELK routes the wires automatically. Supply symbols are auto-positioned near their connected components.
 
 ```python
 hints = {
-    # Left column: R1 -> L1 -> Q1
-    "R1": {"x": 25, "y": 40},
-    "L1": {"x": 20, "y": 110},
-    "Q1": {"x": 14, "y": 180},
-    # Left-inner: R2 (base bias), C2 (cross from Q2)
-    "R2": {"x": 70, "y": 40},
-    "C2": {"x": 65, "y": 110},
-    # Right column: R4 -> L2 -> Q2
-    "R4": {"x": 175, "y": 40},
-    "L2": {"x": 170, "y": 110},
-    "Q2": {"x": 164, "y": 180},
-    # Right-inner: R3 (base bias), C1 (cross from Q1)
-    "R3": {"x": 120, "y": 40},
-    "C1": {"x": 115, "y": 110},
+    # Row 1: resistors (outer = LED current limit, inner = base bias)
+    "R1": {"x": 25, "y": 0},
+    "R2": {"x": 80, "y": 0},
+    "R3": {"x": 130, "y": 0},
+    "R4": {"x": 185, "y": 0},
+    # Row 2: LEDs (outer) + cross-coupling caps (inner)
+    "L1": {"x": 20, "y": 100},
+    "C2": {"x": 75, "y": 100},
+    "C1": {"x": 125, "y": 100},
+    "L2": {"x": 180, "y": 100},
+    # Row 3: transistors (side-by-side)
+    "Q1": {"x": 14, "y": 200},
+    "Q2": {"x": 174, "y": 200},
 }
 ```
 
 **Frequency ≈ 1 / (1.4 × R2 × C1)** (symmetric timing)
 
-**Layout note:** Group left-branch nets together, then right-branch, then cross-coupling last. The `x`/`y` hints switch ELK to INTERACTIVE mode, which respects component positions while still routing wires automatically.
+**Layout note:** Use 100px vertical spacing between rows to give ELK room for wire routing. Supply symbols (Vcc/GND) are auto-positioned directly above/below the components they connect to.
