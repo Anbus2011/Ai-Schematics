@@ -4,9 +4,7 @@ Translates simple parts/nets descriptions into SVG schematics using
 netlistsvg (ELK layout engine) for placement and routing.
 """
 
-from pathlib import Path
-
-from .translator import to_yosys_json, render_svg, ensure_skin
+from .translator import to_yosys_json, render_svg
 
 
 def draw(parts: dict, nets: list[str], hints: dict | None = None,
@@ -19,7 +17,10 @@ def draw(parts: dict, nets: list[str], hints: dict | None = None,
                Example: {"R1": ("res", "470"), "LED1": ("led",)}
         nets: Connection strings describing signal paths.
                Example: ["Vcc -> R1 -> LED1 -> GND"]
-        hints: Reserved for future use (layout hints).
+        hints: Optional layout hints per component. Supported keys:
+               - "partition": int — ELK partition ID (groups components
+                 into columns; same partition = same column)
+               Example: {"Q1": {"partition": 0}, "Q2": {"partition": 1}}
         output: Output SVG filename.
 
     Returns:
@@ -27,8 +28,7 @@ def draw(parts: dict, nets: list[str], hints: dict | None = None,
 
     Raises:
         ValueError: On invalid parts or nets.
-        RuntimeError: If netlistsvg or Node.js is not available.
+        RuntimeError: If Node.js is not available.
     """
-    skin = ensure_skin()
     yosys = to_yosys_json(parts, nets, hints=hints)
-    return render_svg(yosys, output, skin)
+    return render_svg(yosys, output)

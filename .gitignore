@@ -1,12 +1,8 @@
 # Test output
 output/
 
-# Downloaded skin (auto-fetched on first run)
-ezschem/analog_skin.svg
-
-# Node.js (netlistsvg local install)
+# Node.js dependencies (installed via npm install)
 node_modules/
-package.json
 package-lock.json
 
 # Python

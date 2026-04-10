@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "description": "npm dependencies for vendored netlistsvg",
+  "dependencies": {
+    "elkjs": "^0.3.0",
+    "clone": "^2.1.0",
+    "lodash": "^4.17.11",
+    "onml": "^0.3.1"
+  }
+}

@@ -4,7 +4,7 @@ import json
 import os
 import shutil
 import subprocess
-import urllib.request
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -28,16 +28,13 @@ SKIN_TYPES = {
     "zener": "d_sk_v",
     "npn": "q_npn",
     "pnp": "q_pnp",
-    "nmos": "nmos",    # alias added to q_npn block in patched skin
-    "pmos": "pmos",    # alias added to q_pnp block in patched skin
+    "nmos": "nmos",    # alias added to q_npn block in vendored skin
+    "pmos": "pmos",    # alias added to q_pnp block in vendored skin
     "opamp": "opamp",
     "sw": "r_v",
 }
 
-# Maps resolved ezschem pin names → netlistsvg skin port IDs.
-# NMOS/PMOS skin symbols reuse NPN/PNP port layout (C/B/E).
-# Pin mapping is per-skin-type since port IDs differ across component families.
-# Passives (r_v, c_v, l_v) use A/B; diodes use +/-; transistors use C/B/E.
+# Per-type pin mapping: ezschem pin names → netlistsvg skin port IDs.
 _PASSIVE_PORTS = {"start": "A", "end": "B"}
 _DIODE_PORTS = {"start": "+", "end": "-"}
 _BJT_PORTS = {"collector": "C", "base": "B", "emitter": "E"}
@@ -62,93 +59,12 @@ def _pin_to_port(comp_type: str, pin_name: str) -> str:
 # Skin types that should be oriented vertically by ELK.
 VERTICAL_TYPES = {"r_v", "c_v", "l_v", "diode_v", "vcc", "gnd"}
 
+# Paths to vendored netlistsvg
+_VENDOR_DIR = Path(__file__).parent / "vendor" / "netlistsvg"
+_RENDER_JS = _VENDOR_DIR / "render.js"
+_SKIN_PATH = _VENDOR_DIR / "lib" / "analog.svg"
 
-# ---------------------------------------------------------------------------
-# Skin file management
-# ---------------------------------------------------------------------------
-
-_SKIN_URL = (
-    "https://raw.githubusercontent.com/nturley/netlistsvg/master/lib/analog.svg"
-)
-
-# NMOS/PMOS standalone blocks (not matched by netlistsvg currently, but kept
-# for future skin-parser fixes). The aliases on NPN/PNP are what actually work.
-_NMOS_SVG = '''
-<g s:type="nmos" s:width="32" s:height="32" transform="translate(15,420)">
-  <text x="35" y="20" s:attribute="ref" class="$cell_id">M1</text>
-  <circle r="16" cx="16" cy="16" class="symbol $cell_id"/>
-  <path d="M0,16 H10" class="detail $cell_id"/>
-  <path d="M11,6 V26" class="detail $cell_id"/>
-  <path d="M14,6 V12 M14,14 V18 M14,20 V26" class="detail $cell_id"/>
-  <path d="M14,9 H23 V2" class="detail $cell_id"/>
-  <path d="M14,23 H23 V29" class="detail $cell_id"/>
-  <path d="M14,18 20,16 14,14 z" style="fill:#000000" class="$cell_id"/>
-  <g s:x="23" s:y="2" s:pid="C" s:position="top"/>
-  <g s:x="0" s:y="16" s:pid="B" s:position="left"/>
-  <g s:x="23" s:y="29" s:pid="E" s:position="bottom"/>
-</g>
-'''
-
-_PMOS_SVG = '''
-<g s:type="pmos" s:width="32" s:height="32" transform="translate(15,460)">
-  <text x="35" y="20" s:attribute="ref" class="$cell_id">M2</text>
-  <circle r="16" cx="16" cy="16" class="symbol $cell_id"/>
-  <path d="M0,16 H10" class="detail $cell_id"/>
-  <path d="M11,6 V26" class="detail $cell_id"/>
-  <path d="M14,6 V12 M14,14 V18 M14,20 V26" class="detail $cell_id"/>
-  <path d="M14,9 H23 V2" class="detail $cell_id"/>
-  <path d="M14,23 H23 V29" class="detail $cell_id"/>
-  <path d="M20,18 14,16 20,14 z" style="fill:#000000" class="$cell_id"/>
-  <g s:x="23" s:y="2" s:pid="C" s:position="top"/>
-  <g s:x="0" s:y="16" s:pid="B" s:position="left"/>
-  <g s:x="23" s:y="29" s:pid="E" s:position="bottom"/>
-</g>
-'''
-
-
-def _skin_dir() -> Path:
-    """Return the directory where the skin file is cached (next to this module)."""
-    return Path(__file__).parent
-
-
-def ensure_skin() -> Path:
-    """Ensure the custom analog skin file exists; download and patch if needed.
-
-    Returns:
-        Path to the skin SVG file.
-
-    Raises:
-        RuntimeError: If the skin cannot be downloaded.
-    """
-    skin_path = _skin_dir() / "analog_skin.svg"
-    if skin_path.exists():
-        return skin_path
-
-    try:
-        req = urllib.request.Request(_SKIN_URL, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            svg = resp.read().decode("utf-8")
-    except Exception as e:
-        raise RuntimeError(
-            f"Failed to download netlistsvg analog skin: {e}\n"
-            f"Manually download from {_SKIN_URL} and save as {skin_path}"
-        ) from e
-
-    # Add nmos/pmos aliases to existing NPN/PNP blocks
-    svg = svg.replace(
-        '<s:alias val="q_npn"/>',
-        '<s:alias val="q_npn"/>\n  <s:alias val="nmos"/>',
-    )
-    svg = svg.replace(
-        '<s:alias val="q_pnp"/>',
-        '<s:alias val="q_pnp"/>\n  <s:alias val="pmos"/>',
-    )
-
-    # Inject standalone NMOS/PMOS blocks
-    svg = svg.replace("</svg>", _NMOS_SVG + _PMOS_SVG + "</svg>")
-
-    skin_path.write_text(svg, encoding="utf-8")
-    return skin_path
+_PARTITION_KEY = "org.eclipse.elk.partitioning.partition"
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +136,10 @@ def to_yosys_json(parts: dict, nets: list[str],
     Args:
         parts: {"R1": ("res", "10k"), "Q1": ("nmos",), ...}
         nets: ["Vcc -> R1 -> Q1.D", "Q1.S -> GND", ...]
-        hints: Reserved for future use (layout hints).
+        hints: Optional layout hints per component. Supported keys:
+               - "partition": int — ELK partition ID (groups components
+                 into columns; same partition = same column)
+               Example: {"Q1": {"partition": 0}, "Q2": {"partition": 1}}
         module_name: Top-level module name.
 
     Returns:
@@ -319,6 +238,11 @@ def to_yosys_json(parts: dict, nets: list[str],
         if skin_type in VERTICAL_TYPES:
             attrs["org.eclipse.elk.direction"] = "DOWN"
 
+        # Apply partition hint
+        comp_hints = hints.get(comp_name, {})
+        if "partition" in comp_hints:
+            attrs[_PARTITION_KEY] = str(comp_hints["partition"])
+
         cells[comp_name] = {
             "type": skin_type,
             "port_directions": port_dirs,
@@ -345,7 +269,17 @@ def to_yosys_json(parts: dict, nets: list[str],
             "attributes": {"ref": supply_name, "org.eclipse.elk.direction": "DOWN"},
         }
 
-    # --- Pass 4: module ports for signal nets ---
+    # --- Pass 4: ensure all cells have partition if any do ---
+    # ELK crashes if partitioning is active but some nodes lack the attribute.
+    has_partitions = any(
+        _PARTITION_KEY in c["attributes"] for c in cells.values()
+    )
+    if has_partitions:
+        for c in cells.values():
+            if _PARTITION_KEY not in c["attributes"]:
+                c["attributes"][_PARTITION_KEY] = "0"
+
+    # --- Pass 5: module ports for signal nets ---
     ports = {}
     for name in signal_nets:
         nid = net_map.get(name)
@@ -357,32 +291,37 @@ def to_yosys_json(parts: dict, nets: list[str],
 
 
 # ---------------------------------------------------------------------------
-# netlistsvg subprocess
+# netlistsvg subprocess (vendored)
 # ---------------------------------------------------------------------------
 
-def render_svg(yosys_json: dict, output: str, skin_path: Path) -> str:
-    """Write Yosys JSON to a temp file and invoke netlistsvg.
+def render_svg(yosys_json: dict, output: str, skin_path: Path | None = None) -> str:
+    """Write Yosys JSON to a temp file and invoke the vendored netlistsvg.
 
     Args:
         yosys_json: The translated Yosys JSON dict.
         output: Output SVG file path.
-        skin_path: Path to the analog skin SVG.
+        skin_path: Path to the analog skin SVG. Defaults to vendored skin.
 
     Returns:
         The output SVG file path.
 
     Raises:
-        RuntimeError: If npx/netlistsvg is not available or fails.
+        RuntimeError: If Node.js is not available or netlistsvg fails.
     """
-    npx = shutil.which("npx")
-    if not npx:
+    node = shutil.which("node")
+    if not node:
         raise RuntimeError(
-            "npx not found. Install Node.js: https://nodejs.org/\n"
+            "Node.js not found. Install it:\n"
             "  Windows: winget install OpenJS.NodeJS.LTS\n"
-            "  macOS:   brew install node"
+            "  macOS:   brew install node\n"
+            "  Linux:   sudo apt install nodejs"
         )
 
-    import tempfile
+    if skin_path is None:
+        skin_path = _SKIN_PATH
+
+    # Ensure output directory exists
+    Path(output).parent.mkdir(parents=True, exist_ok=True)
 
     # Write JSON to a temp file (cleaned up automatically)
     with tempfile.NamedTemporaryFile(
@@ -392,8 +331,7 @@ def render_svg(yosys_json: dict, output: str, skin_path: Path) -> str:
         json_path = tmp.name
 
     try:
-        cmd = [npx, "netlistsvg", json_path, "-o", output,
-               "--skin", str(skin_path)]
+        cmd = [node, str(_RENDER_JS), json_path, output, str(skin_path)]
 
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=120,
