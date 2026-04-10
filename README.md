@@ -41,10 +41,9 @@ sudo apt install nodejs npm
 ```bash
 git clone https://github.com/Anbus2011/Ai-Schematics.git
 cd Ai-Schematics
-pip install mcp   # for MCP server support
+npm install        # installs elkjs, lodash, and other JS dependencies
+pip install mcp    # for MCP server support (optional)
 ```
-
-The netlistsvg npm package and analog skin file are downloaded automatically on first run.
 
 ## Usage
 
