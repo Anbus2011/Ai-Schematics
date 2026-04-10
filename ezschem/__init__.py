@@ -18,9 +18,10 @@ def draw(parts: dict, nets: list[str], hints: dict | None = None,
         nets: Connection strings describing signal paths.
                Example: ["Vcc -> R1 -> LED1 -> GND"]
         hints: Optional layout hints per component. Supported keys:
-               - "partition": int — ELK partition ID (groups components
-                 into columns; same partition = same column)
-               Example: {"Q1": {"partition": 0}, "Q2": {"partition": 1}}
+               - "partition": int — ELK partition column ID
+               - "x": number — fixed X position (overrides ELK placement)
+               - "y": number — fixed Y position (overrides ELK placement)
+               Example: {"Q1": {"x": 10, "y": 150}, "Q2": {"x": 160, "y": 150}}
         output: Output SVG filename.
 
     Returns:

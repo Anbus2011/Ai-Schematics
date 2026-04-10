@@ -4,6 +4,8 @@ Cross-coupled NPN oscillator. C1/C2 set the flash rate. LEDs alternate.
 
 **Trigger phrases:** "astable multivibrator", "LED flasher", "LED blinker", "alternating LEDs", "blinking circuit"
 
+## Basic (auto-layout)
+
 ```python
 parts = {
     "Q1": ("npn",), "Q2": ("npn",),
@@ -27,6 +29,29 @@ nets = [
 ]
 ```
 
+## Symmetric (with position hints)
+
+For a traditional symmetric layout, use `x`/`y` hints to fix component positions. ELK routes the wires automatically.
+
+```python
+hints = {
+    # Left column: R1 -> L1 -> Q1
+    "R1": {"x": 25, "y": 40},
+    "L1": {"x": 20, "y": 110},
+    "Q1": {"x": 14, "y": 180},
+    # Left-inner: R2 (base bias), C2 (cross from Q2)
+    "R2": {"x": 70, "y": 40},
+    "C2": {"x": 65, "y": 110},
+    # Right column: R4 -> L2 -> Q2
+    "R4": {"x": 175, "y": 40},
+    "L2": {"x": 170, "y": 110},
+    "Q2": {"x": 164, "y": 180},
+    # Right-inner: R3 (base bias), C1 (cross from Q1)
+    "R3": {"x": 120, "y": 40},
+    "C1": {"x": 115, "y": 110},
+}
+```
+
 **Frequency ≈ 1 / (1.4 × R2 × C1)** (symmetric timing)
 
-**Layout note:** Group left-branch nets together, then right-branch, then cross-coupling last. This helps ELK keep the two halves in adjacent columns.
+**Layout note:** Group left-branch nets together, then right-branch, then cross-coupling last. The `x`/`y` hints switch ELK to INTERACTIVE mode, which respects component positions while still routing wires automatically.

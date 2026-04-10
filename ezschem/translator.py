@@ -137,9 +137,10 @@ def to_yosys_json(parts: dict, nets: list[str],
         parts: {"R1": ("res", "10k"), "Q1": ("nmos",), ...}
         nets: ["Vcc -> R1 -> Q1.D", "Q1.S -> GND", ...]
         hints: Optional layout hints per component. Supported keys:
-               - "partition": int — ELK partition ID (groups components
-                 into columns; same partition = same column)
-               Example: {"Q1": {"partition": 0}, "Q2": {"partition": 1}}
+               - "partition": int — ELK partition column ID
+               - "x": number — fixed X position (overrides ELK placement)
+               - "y": number — fixed Y position (overrides ELK placement)
+               Example: {"Q1": {"x": 10, "y": 150}, "Q2": {"x": 160, "y": 150}}
         module_name: Top-level module name.
 
     Returns:
@@ -238,10 +239,14 @@ def to_yosys_json(parts: dict, nets: list[str],
         if skin_type in VERTICAL_TYPES:
             attrs["org.eclipse.elk.direction"] = "DOWN"
 
-        # Apply partition hint
+        # Apply layout hints
         comp_hints = hints.get(comp_name, {})
         if "partition" in comp_hints:
             attrs[_PARTITION_KEY] = str(comp_hints["partition"])
+        if "x" in comp_hints:
+            attrs["org.eclipse.elk.x"] = comp_hints["x"]
+        if "y" in comp_hints:
+            attrs["org.eclipse.elk.y"] = comp_hints["y"]
 
         cells[comp_name] = {
             "type": skin_type,

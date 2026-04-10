@@ -104,13 +104,26 @@ function buildElkGraph(module) {
             }
         });
     }
+    // EZSchem patch: enable INTERACTIVE layout when any child has fixed positions
+    var hasFixedPos = children.some(function (c) {
+        return c.x !== undefined || c.y !== undefined;
+    });
+    var graphLayoutOptions = {};
+    if (hasPartitions) {
+        graphLayoutOptions['org.eclipse.elk.partitioning.activate'] = 'true';
+    }
+    if (hasFixedPos) {
+        graphLayoutOptions['org.eclipse.elk.layered.layering.strategy'] = 'INTERACTIVE';
+        graphLayoutOptions['org.eclipse.elk.layered.crossingMinimization.strategy'] = 'INTERACTIVE';
+        graphLayoutOptions['org.eclipse.elk.layered.nodePlacement.strategy'] = 'INTERACTIVE';
+    }
     var graph = {
         id: module.moduleName,
         children: children,
         edges: edges,
     };
-    if (hasPartitions) {
-        graph.layoutOptions = { 'org.eclipse.elk.partitioning.activate': 'true' };
+    if (Object.keys(graphLayoutOptions).length > 0) {
+        graph.layoutOptions = graphLayoutOptions;
     }
     return graph;
 }
